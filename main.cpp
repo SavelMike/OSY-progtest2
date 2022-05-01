@@ -36,6 +36,13 @@ static void        seqTest1                                ( CCPU            * c
     assert ( cpu -> readInt ( i, x ) );
     assert ( x == 0 );
   }
+  
+   for ( uint32_t i = 0; i < (uint32_t)-1; i += 4 )
+  {
+    uint32_t x;
+    assert ( cpu -> readInt ( i, x ) );
+    assert ( x == 0 );
+  }
 }
 //-------------------------------------------------------------------------------------------------
 static void        seqTest2                                ( CCPU            * cpu,
@@ -109,9 +116,9 @@ int                main                                    ( void )
   
   memMgr ( g_MemoryAligned, MEM_PAGES, DISK_PAGES, fnReadPage, fnWritePage, nullptr, seqTest2 );
 
-  memMgr ( g_MemoryAligned, 100, DISK_PAGES, fnReadPage, fnWritePage, nullptr, seqTest2 );
+  memMgr ( g_MemoryAligned, 10, DISK_PAGES, fnReadPage, fnWritePage, nullptr, seqTest2 );
   
-  memMgr ( g_MemoryAligned, 100, DISK_PAGES, fnReadPage, fnWritePage, nullptr, parTest1 );
+  memMgr ( g_MemoryAligned, 10, DISK_PAGES, fnReadPage, fnWritePage, nullptr, seqTest1 );
   
   pthread_mutex_destroy ( &g_Mtx );
   fclose ( g_Fp );
