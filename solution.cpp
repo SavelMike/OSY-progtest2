@@ -10,16 +10,182 @@ using namespace std;
 #endif /* __PROGTEST__ */
 
 struct pte {
-	uint32_t present:1;
-	uint32_t bitW:1;
-	uint32_t bitU:1;
-	uint32_t swaped:1; // Normally unused 
-	uint32_t unused2:1;
-	uint32_t bitR:1;
-	uint32_t bitD:1;
-	uint32_t unused3:5; 
-	uint32_t frameNumber:20;
+	uint32_t present : 1;
+	uint32_t bitW : 1;
+	uint32_t bitU : 1;
+	uint32_t swaped : 1; // Normally unused 
+	uint32_t unused2 : 1;
+	uint32_t bitR : 1;
+	uint32_t bitD : 1;
+	uint32_t unused3 : 5;
+	uint32_t frameNumber : 20;
 };
+
+class FreeSpaceManager {
+public:
+	FreeSpaceManager(uint8_t* mem, uint32_t pageNum, uint32_t swapPageNum,
+		             bool  (*readPage) (uint32_t memFrame, uint32_t diskPage),
+		             bool  (*writePage) (uint32_t memFrame, uint32_t diskPage));
+	bool readPage(uint32_t memFrame, uint32_t diskPage);
+	uint32_t allocateSwapPage(void);
+	void freeSwapPage(uint32_t pageNum);
+	uint32_t allocatePage(bool isForPageDir);
+	void freePage(uint32_t pageNum);
+	uint32_t nrPages() { return m_PageNum; }
+private:
+	uint32_t m_MemFreeListHead;
+	uint32_t m_SwapFreeListHead;
+	uint32_t* m_MemFreeList;
+	uint32_t* m_SwapFreeList;
+	uint32_t m_PageNum;
+	uint32_t m_SwapPageNum;
+	uint32_t m_PageDirs[PROCESS_MAX];
+	bool  (*m_readPage) (uint32_t memFrame, uint32_t diskPage);
+	bool  (*m_writePage) (uint32_t memFrame, uint32_t diskPage);
+};
+
+/* Args:
+	pageNum - number of frames(pages) in main memory.
+	swapPageNum - number of frames in swap space
+*/
+
+FreeSpaceManager::FreeSpaceManager(uint8_t* mem, uint32_t pageNum, uint32_t swapPageNum,
+				                   bool  (*readPage) (uint32_t memFrame, uint32_t diskPage),
+								   bool  (*writePage) (uint32_t memFrame, uint32_t diskPage)) {
+	m_PageNum = pageNum;
+	m_SwapPageNum = swapPageNum;
+	// Number of pages needed for free lists
+	int pages = ((pageNum + swapPageNum) * sizeof(uint32_t) + (CPPU::PAGE_SIZE - 1)) / CPPU::PAGE_SIZE;
+	m_MemFreeList = mem;
+	m_MemFreeListHead = pages;
+	for (int i = m_MemFreeListHead; i < pageNum; i++) {
+		if (i == pageNum - 1) {
+			// End of free list
+			m_MemFreeList[i] = UINT32_MAX;
+		}
+		else {
+			m_MemFreeList[i] = i + 1;
+		}
+	}
+	m_SwapFreeList = m_MemFreeList + pageNum;
+	m_SwapFreeListHead = 0;
+	for (int i = 0; i < swapPageNum; i++) {
+		if (i == swapPageNum - 1) {
+			m_SwapFreeList[i] = UINT32_MAX;
+		}
+		else {
+			m_SwapFreeList[i] = i + 1;
+		}
+	}
+
+	m_readPage = readPage;
+	m_writePage = writePage;
+
+	for (int i = 0; i < PROCESS_MAX; i++) {
+		m_PageDirs[i] = 0;
+	}
+}
+
+bool FreeSpaceManager::readPage(uint32_t memFrame, uint32_t diskPage) {
+	return m_readPage(memFrame, diskPage);
+}
+
+uint32_t FreeSpaceManager::allocateSwapPage(void) {
+	uint32_t pageNum = this->m_SwapFreeListHead;
+	if (pageNum == UINT32_MAX) {
+		return pageNum;
+	}
+	this->m_SwapFreeListHead = this->m_SwapFreeList[pageNum];
+	return pageNum;
+}
+
+void FreeSpaceManager::freeSwapPage(uint32_t pageNum) {
+	this->m_SwapFreeList[pageNum] = this->m_SwapFreeListHead;
+	this->m_SwapFreeListHead = pageNum;
+}
+
+// Save pageNum into empty slot of array m_PageDirs.
+void FreeSpaceManager::savePageDir(uint32_t pageNum) {
+	for (int i = 0; i < PROCESS_MAX; i++) {
+		if (m_PageDirs[i] == 0) {
+			m_PageDirs[i] = pageNum;
+			break;
+		}
+	}
+}
+
+//  Find slot containing pageNum and write 0 into it. 
+void FreeSpaceManager::freePageDirs(uint32_t pageNum) {
+	for (int i = 0; i < PROCESS_MAX; i++) {
+		if (m_PageDirs[i] == pageNum) {
+			m_PageDirs[i] = 0;
+			break;
+		}
+	}
+}
+
+// Args:
+//	isForPageDir: true if page is allocated for page directory
+uint32_t FreeSpaceManager::allocatePage(bool isForPageDir) {
+	uint32_t pageNum = this->m_MemFreeListHead;
+	if (pageNum != UINT32_MAX) {
+		// There is free space
+		this->m_MemFreeListHead = this->m_MemFreeList[pageNum];
+		if (isForPageDir) {
+			savePageDir(pageNum);
+		}
+		return pageNum;
+	}
+	// There is no free space. Find page candidate for swapping out
+	for (int i = 0; i < PROCESS_MAX; i++) {
+		if (m_PageDirs[i] == 0) {
+			continue;
+		}
+		struct pte* pde = (struct pte*)((uint8_t*)m_MemFreeList + m_PageDirs[i] * CCPU::PAGE_SIZE);
+		for (unsigned k = 0; k < CCPU::PAGE_SIZE / sizeof(pde[0]); k++) {
+			if (!pde[k].present) {
+				continue;
+			}
+			struct pte* pte = (struct pte*)((uint8_t*)m_MemFreeList + pde[k].frameNumber * CCPU::PAGE_SIZE);
+			for (unsigned l = 0; l < CCPU::PAGE_SIZE / sizeof(pte[0]); l++) {
+				if (!pte[l].present) {
+					continue;
+				}
+				// Found candidate for swapping out
+				pageNum = pte[k].frameNumber;
+				uint32_t swapPageNum = allocateSwapPage();
+				m_writePage(pte[k].frameNumber, swapPageNum);
+				pte[k].present = 0;
+				if (swapPageNum >= m_SwapSize) {
+					exit(6);
+				}
+				pte[k].frameNumber = swapPageNum;
+				pte[k].swaped = 1;
+				if (isForPageDir) {
+					savePageDir(pageNum);
+				}
+				return pageNum;
+			}
+		}
+	}
+
+	// Candidate for swap out not found.
+	return UINT32_MAX;
+}
+
+void FreeSpaceManager::freePage(uint32_t pageNum) {
+	this->m_MemFreeList[pageNum] = this->m_MemFreeListHead;
+	this->m_MemFreeListHead = pageNum;
+	for (int i = 0; i < PROCESS_MAX; i++) {
+		if (m_PageDirs[i] == pageNum) {
+			m_PageDirs[i] = 0;
+			break;
+		}
+	}
+}
+
+#if 0
+
 
 // Two bit per slot
 // 00 page is free
@@ -193,9 +359,11 @@ public:
 		return m_MapSize;
 	}
 };
-
 CMemoryBitMap* g_Map;
 
+#endif // 0
+
+FreeSpaceManager* g_FSMan;
 
 class CMM : public CCPU
 {
@@ -240,15 +408,17 @@ bool CMM::pageFaultHandler(	uint32_t address, bool write)
 	
 	if (pageDirPte[level1index].present == 0) {
 		// Level2 pageTable is not present
-		uint32_t frameNum = g_Map->allocatePage(2);
-		if (frameNum == (uint32_t)-1) {
+		uint32_t frameNum = g_FSMan->allocatePage(false);
+		if (frameNum == UINT32_MAX) {
+			cerr << "Fail to allocate page for level2 page table\n";
 			exit(1);
 		}
 		pageDirPte[level1index].present = 1;
 		pageDirPte[level1index].bitU = 1;
 		pageDirPte[level1index].bitW = write;
-		if (frameNum >= g_Map->nrPages()) {
-			exit(7);
+		if (frameNum >= g_FSMan->nrPages()) {
+			cerr << "Non-existing page is allocated\n";
+			exit(1);
 		}
 		pageDirPte[level1index].frameNumber = frameNum;
 		pageTablePte = (struct pte*)(m_MemStart + frameNum * PAGE_SIZE);
@@ -264,26 +434,30 @@ bool CMM::pageFaultHandler(	uint32_t address, bool write)
 	int level2index = (address >> OFFSET_BITS) & (PAGE_DIR_ENTRIES - 1);
 	if (pageTablePte[level2index].present == 0) {
 		// Virtual page is not present but can be swaped
-		uint32_t frameNum = g_Map->allocatePage(3);
-		if (frameNum == (uint32_t)-1) {
-			exit(2);
+		uint32_t frameNum = g_FSMan->allocatePage(false);
+		if (frameNum == UINT32_MAX) {
+			cerr << "Fail to allocate page for address space\n";
+			exit(1);
 		}
 		pageTablePte[level2index].present = 1;
 		pageTablePte[level2index].bitU = 1;
 		pageTablePte[level2index].bitW = write;
 		if (pageTablePte[level2index].swaped == 1) {
-			g_Map->readPage(frameNum, pageTablePte[level2index].frameNumber);
+			// Read page from swap space
+			g_FSMan->readPage(frameNum, pageTablePte[level2index].frameNumber);
 			pageTablePte[level2index].swaped = 0;
-			g_Map->freeSwapPage(pageTablePte[level2index].frameNumber);
+			g_FSMan->freeSwapPage(pageTablePte[level2index].frameNumber);
 		}
-		if (frameNum >= g_Map->nrPages()) {
-			exit(8);
+		if (frameNum >= g_FSMan->nrPages()) {
+			cerr << "Non-existing page is allocated for address space page\n";
+			exit(1);
 		}
 		pageTablePte[level2index].frameNumber = frameNum;
 	} 
 	
 	if (pageTablePte[level2index].bitW != write) {
-		exit(3);
+		cerr << "Right bit mismatch\n";
+		exit(1);
 	}
 	
 	return true;
@@ -301,15 +475,15 @@ void               memMgr                                  ( void            * m
 	for (uint32_t i = 0; i < memPages * CCPU::PAGE_SIZE; i++) {
 		((uint8_t*)mem)[i] = 0;
 	}
-	// Create map of free used pages
-	g_Map = new CMemoryBitMap(mem, memPages, diskPages, readPage, writePage);
+	// Create free space manager
+	g_FSMan = new FreeSpaceManager(mem, memPages, diskPages, readPage, writePage);
 	
 	// Create instance of CCPU
-	uint32_t pTable = g_Map->allocatePage(1);
+	uint32_t pTable = g_FSMan->allocatePage(true);
 	CMM mm((uint8_t*)mem, pTable * CCPU::PAGE_SIZE);
     
 	// Start init process
 	mainProcess(&mm, processArg);
 	
-	delete g_Map;
+	delete g_FSMan;
 }
