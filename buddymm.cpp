@@ -5,20 +5,190 @@
 #include <cstdint>
 #include <cassert>
 #include <cmath>
+#include <iostream>
 using namespace std;
 #endif /* __PROGTEST__ */
 
+struct BFLElement {
+	// Pointer to next element
+	uint32_t next;
+	// Address
+	uint32_t address;
+};
+
+struct BFLElement* usedBuddyList[32];
+struct BFLElement* freeBuddyList[32];
+
+struct BFLElement allMem;
+
+int maxOrder;
+
+#define MINBUDDYSIZE 32
+
+#if 0
+void BuddyUsedListInsert(union Block* blk, int order)
+{
+	union Block* head = usedBuddyList[order];
+	if (head == NULL) {
+		usedBuddyList[order] = blk;
+		return;
+	}
+
+	while (1) {
+		union Block* next = head->buddyFreeListBlock.next;
+		assert(head->buddyFreeListBlock.address < blk->buddyFreeListBlock.address);
+
+		if ((next == NULL) || (next->buddyFreeListBlock.address > blk->buddyFreeListBlock.address)) {
+			// Insert blk after head before next
+			head->buddyFreeListBlock.next = blk;
+			blk->buddyFreeListBlock.next = head;
+			break;
+		}
+		head = next;
+	}
+}
+#endif
+
+void PrintBuddyList(struct BFLElement** buddyList, const char* msg)
+{
+	cout << msg << "\n"; 
+	for (int i = 0; i < 32; i++) {
+		if (buddyList[i] == NULL) {
+			continue;
+		}
+		struct BFLElement* head = buddyList[i];
+		cout << "buddy size = " << (1 << i) << ", addresses: ";
+		while (head != NULL) {
+			cout << " " << head->address;
+			head = head->next;  
+		}
+		cout << "\n";
+	}
+}
+
+#if 0
+void BuddyFreeListInsert(union Block* blk, int order)
+{
+	union Block* head = freeBuddyList[order];
+	if (head == NULL) {
+		freeBuddyList[order] = blk;
+		return;
+	}
+
+	while (1) {
+		union Block* next = head->buddyFreeListBlock.next;
+		assert(head->buddyFreeListBlock.address < blk->buddyFreeListBlock.address);
+
+		if ((next == NULL) || (next->buddyFreeListBlock.address > blk->buddyFreeListBlock.address)) {
+			// Insert blk after head before next
+			head->buddyFreeListBlock.next = blk;
+			blk->buddyFreeListBlock.next = head;
+			break;
+		}
+		head = next;
+	}
+}
+#endif
+
+void* memory;
+
+struct BFLElement* reservedMemory;
+
+uint32_t firstFreeBFLE;
+
+void ReserveMemInit(int memSize)
+{
+	reservedMemory = memory;
+	int nrBFLElements = memSize / MINBUDDYSIZE;
+	int reservedMemSize = nrBFLElements * sizeof(struct BFLElement); 
+	int power = 1;
+	
+	
+	while (power < reservedMemSize) {
+		power *= 2;
+	}
+	reservedMemSize = power;
+	firstFreeBFLE = 0;
+	for (int i = 0; i < (nrBFLElements - 1); i++) {
+		reservedMemory[i].next = i + 1;
+	}
+	reservedMemory[nrBFLElements - 1].next = 0xffffffff;
+}
+
+struct BFLElement* AllocBFLE(void)
+{
+	if (firstFreeBFLE == 0xffffffff) {
+		return NULL;
+	}
+	struct BFLElement* res = reservedMemory + firstFreeBFLE;
+	firstFreeBFLE = res->next;
+
+	return res;
+}
+
+
+void* FreeBFLE(struct BFLElement* el)
+{
+	el->next = firstFreeBFLE;
+	firstFreeBFLE = el - reservedMemory;
+}
+
 void   HeapInit    ( void * memPool, int memSize )
 {
-  /* todo */
+	memory = memPool;
+	int power = 1;
+	int order = 0;	
+	
+	while (power < memSize) {
+		power *= 2;
+		order++;
+	}
+
+
+	// Init memory and call function for initialization
+	PrintBuddyList(freeBuddyList, "Free buddy list");	
+	
+	PrintBuddyList(usedBuddyList, "Used buddy list");
+       
 }
+
+void* BuddyAlloc(int order) {
+	struct BFLElement* tmp;
+	struct BFLElement* cur;
+	struct BFLElement* prev;
+
+	for (int i = order; i < maxOrder; i++) {
+		if (freeBuddyList[i] == NULL) {
+			continue;
+		}
+		if (i == order) {
+			  tmp = freeBuddyList[i];
+			  freeBuddyList[i] = tmp->next;
+			  // Insert tmp to used buddy list
+			  cur = usedBuddyList[i];  
+			  while (cur != NULL) {
+				  if (cur->address < tmp->address) {
+					  prev = cur;
+					  cur = cur->next;
+					  continue;
+				  }
+				  break;
+			  }
+			  tmp->next = prev->next;
+			  prev->next = tmp;
+			  return (char*)memory + (1 << order) * tmp->address;
+		}
+	}
+	return NULL;
+}
+
 void * HeapAlloc   ( int    size )
 {
-  /* todo */
+	return NULL;
 }
 bool   HeapFree    ( void * blk )
 {
-  /* todo */
+	return false;
 }
 void   HeapDone    ( int  * pendingBlk )
 {
@@ -32,7 +202,8 @@ int main ( void )
   int             pendingBlk;
   static uint8_t  memPool[3 * 1048576];
 
-  HeapInit ( memPool, 2097152 );
+  HeapInit ( memPool, 2 * 1048576);
+  return 0;
   assert ( ( p0 = (uint8_t*) HeapAlloc ( 512000 ) ) != NULL );
   memset ( p0, 0, 512000 );
   assert ( ( p1 = (uint8_t*) HeapAlloc ( 511000 ) ) != NULL );

@@ -112,7 +112,6 @@ void * HeapAlloc   ( int    size )
 			continue;
 		}
 #if 0
-		hfghfgh
 		if ((bitmap_p[i] & 0x55) == 0) {
 			// All alloc_units addressed by bitmap_p[i] are free
 			if (zeros_in_row == 0) {
